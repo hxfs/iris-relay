@@ -16,7 +16,7 @@ version: "3.4"
 # Define the Docker Compose services that are available to build and run.
 services:
   # Defines the example service, which uses the example Docker image.
-  example:
+  iris:
     image: wayfair/iris
     build:
       dockerfile: Dockerfile
