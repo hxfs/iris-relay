@@ -21,7 +21,7 @@ dockerBuildPipeline {
   // skipPublish  = false      // Whether the publishing of images should be skipped. Useful for testing.
   skipLint  = true      // Whether the publishing of images should be skipped. Useful for testing.
   // slaveLabel   = 'ci'       // Slave label to build on.
-  // tagStrategy  = 'semantic' // Set the container tagging policy. Can be either 'semantic' or 'sha',
+  tagStrategy  = 'sha' // Set the container tagging policy. Can be either 'semantic' or 'sha',
                                // is set to 'semantic' by default
 
   // Extreme caution should be used with the following parameters. They affect
