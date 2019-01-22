@@ -10,11 +10,12 @@ RUN useradd -m -s /bin/bash iris
 ADD docker/daemons /home/iris/daemons
 ADD src /home/iris/src
 ADD setup.py /home/iris/setup.py
+ADD dev_requirements.txt /home/iris/dev_requirements.txt
 
 RUN chown -R iris:iris /home/iris /var/log/nginx /var/lib/nginx \
     && sudo -Hu iris mkdir -p /home/iris/var/log/uwsgi /home/iris/var/log/nginx /home/iris/var/run /home/iris/var/relay \
     && sudo -Hu iris virtualenv /home/iris/env \
-    && sudo -Hu iris /bin/bash -c 'source /home/iris/env/bin/activate && python /home/iris/setup.py install'
+    && sudo -Hu iris /bin/bash -c 'source /home/iris/env/bin/activate && cd /home/iris/ && pip install -r dev_requirements.txt .'
 
 EXPOSE 16648
 
