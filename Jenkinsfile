@@ -7,7 +7,7 @@
 // @author Nick Hentschel <nhentschel@wayfair.com>
 // @copyright 2018 Wayfair, LLC. -- All rights reserved.
 
-@Library('jenkins-pipeline-library') _
+@Library('jenkins-pipeline-library@jmatsushita_skiplint') _
 
 dockerBuildPipeline {
   // Optional parameters below affect builds. All settings have defaults, and
@@ -19,6 +19,7 @@ dockerBuildPipeline {
   rebuildAll   = true      // Whether to rebuild all images every time a commit is pushed.
   runGossTests = false       // Whether Goss tests should be run.
   // skipPublish  = false      // Whether the publishing of images should be skipped. Useful for testing.
+  skipLint  = true      // Whether the publishing of images should be skipped. Useful for testing.
   // slaveLabel   = 'ci'       // Slave label to build on.
   // tagStrategy  = 'semantic' // Set the container tagging policy. Can be either 'semantic' or 'sha',
                                // is set to 'semantic' by default
