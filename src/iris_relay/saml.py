@@ -36,6 +36,7 @@ class SAML(object):
             metadata = self.metadata[idp_name]
 
         settings = {
+            'entityid': 'iris',
             'metadata': {
                 'inline': [metadata],
             },
