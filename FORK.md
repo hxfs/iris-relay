@@ -11,7 +11,7 @@ Pull upstream:
 
 - git remote add upstream git@github.com:linkedin/iris-relay.git
 - git checkout upstream
-- git pull upstream
+- git pull upstream master
 
 Update ongoing work
 
