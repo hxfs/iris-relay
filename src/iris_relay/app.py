@@ -10,13 +10,16 @@ from base64 import b64encode, decodestring, urlsafe_b64encode
 from hashlib import sha1, sha512
 from cryptography.fernet import Fernet
 from logging import basicConfig, getLogger
+from importlib import import_module
 import logging
-from urllib import unquote_plus, urlencode, unquote
-import urllib2
+
+from urllib.parse import unquote_plus, urlencode, unquote
+import urllib.request as urllib2
 
 from . import db
 from streql import equals
-from twilio import twiml
+from twilio.twiml.voice_response import VoiceResponse
+from twilio.twiml.messaging_response import MessagingResponse
 from urllib3.exceptions import MaxRetryError
 import yaml
 import falcon
@@ -28,6 +31,9 @@ from saml2 import entity
 from iris_relay.client import IrisClient
 from iris_relay.gmail import Gmail
 from iris_relay.saml import SAML
+
+from irisclient import IrisClient as IrisMobileClient
+from oncallclient import OncallClient
 
 logger = getLogger(__name__)
 
@@ -54,16 +60,18 @@ def compute_signature(token, uri, post_body, utf=False):
     """
     s = uri
     if len(post_body) > 0:
+        p_b_split = post_body.decode().split('&')
         lst = [unquote_plus(kv.replace('=', ''))
-               for kv in sorted(post_body.split('&'))]
+               for kv in sorted(p_b_split)]
         lst.insert(0, s)
         s = ''.join(lst)
 
+    s = s.encode('utf8')
+    token = token.encode('utf8')
+
     # compute signature and compare signatures
-    if isinstance(s, str):
+    if isinstance(s, bytes):
         mac = hmac.new(token, s, sha1)
-    elif isinstance(s, unicode):
-        mac = hmac.new(token, s.encode("utf-8"), sha1)
     else:
         # Should never happen
         raise TypeError
@@ -85,6 +93,7 @@ class IDPInitiated(object):
 
     def on_post(self, req, resp, idp_name):
         saml_client = self.saml_manager.saml_client_for(idp_name)
+        req.context['body'] = req.context['body'].decode('utf-8')
         form_data = falcon.uri.parse_query_string(req.context['body'])
 
         # Pysaml2 defaults to config-defined encryption keys, but must
@@ -102,7 +111,7 @@ class IDPInitiated(object):
         if self.username_attr:
             username = authn_response.ava[self.username_attr][0]
         refresh_token = hashlib.sha256(os.urandom(32)).hexdigest()
-        encrypted_token = self.fernet.encrypt(refresh_token)
+        encrypted_token = self.fernet.encrypt(refresh_token.encode('utf-8'))
         exp = time.time() + self.refresh_ttl
         connection = db.connect()
         cursor = connection.cursor()
@@ -142,7 +151,7 @@ class TokenRefresh(object):
         # Username verified in auth middleware
         username = req.context['user']
         access_token = hashlib.sha256(os.urandom(32)).hexdigest()
-        encrypted_token = self.fernet.encrypt(access_token)
+        encrypted_token = self.fernet.encrypt(access_token.encode('utf8'))
         exp = time.time() + self.access_ttl
 
         connection = db.connect()
@@ -183,7 +192,7 @@ class SPInitiated(object):
         redirect_url = None
         # Select the IdP URL to send the AuthN request to
         for key, value in info['headers']:
-            if key is 'Location':
+            if key == 'Location':
                 redirect_url = value
         # NOTE:
         #   I realize I _technically_ don't need to set Cache-Control or Pragma:
@@ -241,7 +250,7 @@ class GmailRelay(object):
         """
         config = self.config.get('gmail', {})
         token = req.get_param('token')
-        post_body = req.context['body']
+        post_body = req.context['body'].decode('utf-8')
 
         # Verify the request came from Google.
         if token != config.get('token'):
@@ -302,7 +311,9 @@ class GmailOneClickRelay(object):
         self.config = config
         self.iclient = iclient
         self.data_keys = ('msg_id', 'email_address', 'cmd')  # Order here matters; needs to match what is in iris-api
-        self.hmac = hmac.new(self.config['gmail_one_click_url_key'], '', sha512)
+        key = self.config['gmail_one_click_url_key']
+        key = key.encode('utf8')
+        self.hmac = hmac.new(key, b'', sha512)
 
     def on_get(self, req, resp):
         token = req.get_param('token', True)
@@ -330,7 +341,9 @@ class GmailOneClickRelay(object):
 
     def validate_token(self, given_token, data):
         mac = self.hmac.copy()
-        mac.update(' '.join(data[key] for key in self.data_keys))
+        text = ' '.join(data[key] for key in self.data_keys)
+        text = text.encode('utf8')
+        mac.update(text)
         return given_token == urlsafe_b64encode(mac.digest())
 
 
@@ -354,7 +367,7 @@ class TwilioCallsSay(object):
         """
         content = req.get_param('content')
         loop = req.get_param('loop')
-        r = twiml.Response()
+        r = VoiceResponse()
         r.say(content, voice='alice', loop=loop, language="en-US")
         resp.status = falcon.HTTP_200
         resp.body = str(r)
@@ -413,7 +426,7 @@ class TwilioCallsGather(object):
             'message_id': message_id,
         })
 
-        r = twiml.Response()
+        r = VoiceResponse()
         if req.get_param('AnsweredBy') == 'machine':
             logger.info("Voice mail detected for message id: %s", message_id)
             r.say(content, voice='alice', language="en-US", loop=loop)
@@ -439,7 +452,7 @@ class TwilioCallsRelay(object):
 
     @staticmethod
     def return_twixml_call(reason, resp):
-        r = twiml.Response()
+        r = VoiceResponse()
         r.say(reason, voice='alice', loop=2, language="en-US")
         r.hangup()
         resp.status = falcon.HTTP_200
@@ -463,7 +476,7 @@ class TwilioCallsRelay(object):
 
         try:
             path = self.config['iris']['hook']['twilio_calls']
-            re = self.iclient.post(path, req.context['body'], raw=True, params={
+            re = self.iclient.post(path, req.context['body'].decode('utf-8'), raw=True, params={
                 'message_id': message_id
             })
         except MaxRetryError as e:
@@ -471,7 +484,7 @@ class TwilioCallsRelay(object):
             self.return_twixml_call('Connection error to web hook.', resp)
             return
 
-        if re.status is not 200:
+        if re.status != 200:
             self.return_twixml_call(
                 'Got status code: %d, content: %s' % (re.status,
                                                       re.data[0:100]), resp)
@@ -489,7 +502,7 @@ class TwilioMessagesRelay(object):
 
     @staticmethod
     def return_twixml_message(reason, resp):
-        r = twiml.Response()
+        r = MessagingResponse()
         r.message(reason)
         resp.status = falcon.HTTP_200
         resp.body = str(r)
@@ -501,13 +514,13 @@ class TwilioMessagesRelay(object):
         """
         try:
             path = self.config['iris']['hook']['twilio_messages']
-            re = self.iclient.post(path, req.context['body'], raw=True)
+            re = self.iclient.post(path, req.context['body'].decode('utf-8'), raw=True)
         except MaxRetryError as e:
             logger.error(e.reason)
             self.return_twixml_message('Connection error to web hook.', resp)
             return
 
-        if re.status is not 200:
+        if re.status != 200:
             self.return_twixml_message(
                 'Got status code: %d, content: %s' % (re.status,
                                                       re.data[0:100]), resp)
@@ -530,12 +543,12 @@ class TwilioDeliveryStatus(object):
         """
 
         try:
-            re = self.iclient.post(self.endpoint, req.context['body'], raw=True)
+            re = self.iclient.post(self.endpoint, req.context['body'].decode('utf-8'), raw=True)
         except MaxRetryError:
             logger.exception('Failed posting data to iris-api')
             raise falcon.HTTPInternalServerError('Internal Server Error', 'API call failed')
 
-        if re.status is not 204:
+        if re.status != 204:
             logger.error('Invalid response from API for delivery status update: %s', re.status)
             raise falcon.HTTPBadRequest('Likely bad params passed', 'Invalid response from API')
 
@@ -562,6 +575,7 @@ class SlackMessagesRelay(object):
         Accept slack's message from interactive buttons
         """
         try:
+            req.context['body'] = req.context['body'].decode('utf-8')
             form_post = falcon.uri.parse_query_string(req.context['body'])
             payload = ujson.loads(form_post['payload'])
             if not self.valid_token(payload['token']):
@@ -571,9 +585,11 @@ class SlackMessagesRelay(object):
             try:
                 msg_id = int(payload['callback_id'])
             except KeyError as e:
+                logger.error(e)
                 logger.error('callback_id not found in the json payload.')
                 raise falcon.HTTPBadRequest('Bad Request', 'Callback id not found')
             except ValueError as e:
+                logger.error(e)
                 logger.error('Callback ID not an integer: %s', payload['callback_id'])
                 raise falcon.HTTPBadRequest('Bad Request', 'Callback id must be int')
             data = {'msg_id': msg_id,
@@ -587,7 +603,7 @@ class SlackMessagesRelay(object):
                 return
             if result.status == 400:
                 raise falcon.HTTPBadRequest('Bad Request', '')
-            elif result.status is not 200:
+            elif result.status != 200:
                 raise falcon.HTTPInternalServerError('Internal Server Error', 'Unknown response from the api')
             else:
                 content = process_api_response(result.data)
@@ -602,6 +618,7 @@ class SlackAuthenticate(object):
     """
     Will be used only once to setup slack OAuth
     """
+
     def on_get(self, req, resp):
         resp.status = falcon.HTTP_200
         resp.body = 'Message Received'
@@ -637,38 +654,69 @@ class GmailVerification(object):
         resp.body = self.msg
 
 
-class MobileSink(object):
+class IrisMobileSink(object):
 
-    def __init__(self, mobile_client):
-        self.mobile_client = mobile_client
+    def __init__(self, iris_client, base_url):
+        self.iris_client = iris_client
+        self.base_url = base_url
 
     def __call__(self, req, resp):
-        path = '/'.join(req.path.split('/')[4:])
+        path = self.base_url + '/v0/' + '/'.join(req.path.split('/')[4:])
         if req.query_string:
             path += '?%s' % req.query_string
         try:
             if req.method == 'POST':
-                body = ''
+                body = b''
                 if req.context['body']:
-                    body = ujson.loads(req.context['body'])
-                result = self.mobile_client.post(path, body)
+                    body = req.context['body']
+                result = self.iris_client.post(path, body)
             elif req.method == 'GET':
-                result = self.mobile_client.get(path)
+                result = self.iris_client.get(path)
             elif req.method == 'OPTIONS':
                 return
             else:
                 raise falcon.HTTPMethodNotAllowed(['GET', 'POST', 'PUT', 'DELETE'])
         except MaxRetryError as e:
-                logger.error(e.reason)
-                raise falcon.HTTPInternalServerError('Internal Server Error', 'Max retry error, api unavailable')
-        if result.status == 400:
+            logger.error(e.reason)
+            raise falcon.HTTPInternalServerError('Internal Server Error', 'Max retry error, api unavailable')
+        if result.status_code == 400:
             raise falcon.HTTPBadRequest('Bad Request', '')
-        elif str(result.status)[0] != '2':
+        elif str(result.status_code)[0] != '2':
             raise falcon.HTTPInternalServerError('Internal Server Error', 'Unknown response from the api')
         else:
             resp.status = falcon.HTTP_200
             resp.content_type = result.headers['Content-Type']
-            resp.body = result.data
+            resp.body = result.content
+
+
+class OncallMobileSink(object):
+
+    def __init__(self, oncall_client, base_url):
+        self.oncall_client = oncall_client
+        self.base_url = base_url
+
+    def __call__(self, req, resp):
+        path = self.base_url + '/api/v0/' + '/'.join(req.path.split('/')[4:])
+        if req.query_string:
+            path += '?%s' % req.query_string
+        try:
+            if req.method == 'GET':
+                result = self.oncall_client.get(path)
+            elif req.method == 'OPTIONS':
+                return
+            else:
+                raise falcon.HTTPMethodNotAllowed(['GET', 'OPTIONS'])
+        except MaxRetryError as e:
+            logger.error(e.reason)
+            raise falcon.HTTPInternalServerError('Internal Server Error', 'Max retry error, api unavailable')
+        if result.status_code == 400:
+            raise falcon.HTTPBadRequest('Bad Request', '')
+        elif str(result.status_code)[0] != '2':
+            raise falcon.HTTPInternalServerError('Internal Server Error', 'Unknown response from the api')
+        else:
+            resp.status = falcon.HTTP_200
+            resp.content_type = result.headers['Content-Type']
+            resp.body = result.content
 
 
 class RegisterDevice(object):
@@ -677,12 +725,12 @@ class RegisterDevice(object):
         self.iris = iris_client
 
     def on_post(self, req, resp):
-        data = ujson.loads(req.context['body'])
+        data = ujson.loads(req.context['body'].decode('utf-8'))
         data['username'] = req.context['user']
         result = self.iris.post('devices', data)
         if result.status == 400:
             raise falcon.HTTPBadRequest('Bad Request', '')
-        elif result.status is not 201:
+        elif result.status != 201:
             logger.error('Unknown response from API: %s: %s', result.status, result.data)
             raise falcon.HTTPInternalServerError('Internal Server Error', 'Unknown response from the api')
         resp.status = falcon.HTTP_201
@@ -709,10 +757,13 @@ class AuthMiddleware(object):
             self.twilio_auth_token = token
         else:
             self.twilio_auth_token = [token]
+        self.debug = False
         if self.config['server'].get('debug'):
-            self.auth = lambda x: True
+            self.debug = True
 
     def process_request(self, req, resp):
+        if self.debug:
+            return
         # CORS Pre-flight
         if req.method == 'OPTIONS':
             resp.status = falcon.HTTP_204
@@ -748,12 +799,13 @@ class AuthMiddleware(object):
                     post_body = req.context['body']
                     expected_sigs = [compute_signature(t, ''.join(uri), post_body)
                                      for t in self.twilio_auth_token]
+                    sig = sig.encode('utf8')
                     if sig not in expected_sigs:
                         logger.warning('twilio validation failure: %s not in possible sigs: %s',
                                        sig, expected_sigs)
                         raise falcon.HTTPUnauthorized('Access denied', 'Twilio auth failure', [])
                     return
-                elif self.mobile and segments[2] == 'mobile':
+                elif self.mobile and (segments[2] == 'mobile' or segments[2] == 'oncall'):
                     # Only allow refresh tokens for /refresh, only access for all else
                     table = 'refresh_token' if segments[3] == 'refresh' else 'access_token'
                     key_query = '''SELECT `key`, `target`.`name`
@@ -776,12 +828,13 @@ class AuthMiddleware(object):
                         raise falcon.HTTPUnauthorized('Authentication failure: invalid header')
                     client_digest = parts['signature']
                     key_id = parts['keyId']
-                    body = req.context['body']
+                    body = req.context['body'].decode('utf8')
                     path = req.env['PATH_INFO']
                     qs = req.env['QUERY_STRING']
                     if qs:
                         path = path + '?' + qs
                     text = '%s %s %s %s' % (window, method, path, body)
+                    text = text.encode('utf8')
 
                     conn = db.connect()
                     cursor = conn.cursor()
@@ -791,13 +844,14 @@ class AuthMiddleware(object):
                     # make sure that there exists a row for the corresponding username
                     if row is None:
                         raise falcon.HTTPUnauthorized('Authentication failure: server')
-                    key = self.fernet.decrypt(str(row[0]))
+                    key = self.fernet.decrypt(str(row[0]).encode('utf8'))
+                    key = key
                     req.context['user'] = row[1]
 
                     HMAC = hmac.new(key, text, hashlib.sha512)
                     digest = urlsafe_b64encode(HMAC.digest())
 
-                    if hmac.compare_digest(client_digest, digest) and time_diff < self.time_window:
+                    if hmac.compare_digest(client_digest.encode('utf8'), digest) and time_diff < self.time_window:
                         return
                     else:
                         raise falcon.HTTPUnauthorized('Authentication failure: server')
@@ -806,7 +860,7 @@ class AuthMiddleware(object):
         elif len(segments) == 1:
             if segments[0] == 'health' or segments[0] == 'healthcheck':
                 return
-            elif segments[0] == self.config['gmail'].get('verification_code'):
+            elif segments[0] == self.config.get('gmail', {}).get('verification_code'):
                 return
 
         elif segments[0] == 'saml':
@@ -851,6 +905,8 @@ class CORS(object):
             )
             if not allow_headers:
                 allow_headers = '*'
+            if not allow:
+                allow = ''
 
             resp.set_headers((
                 ('Access-Control-Allow-Methods', allow),
@@ -862,7 +918,7 @@ class CORS(object):
 def read_config_from_argv():
     import sys
     if len(sys.argv) < 2:
-        print 'Usage: %s CONFIG_FILE' % sys.argv[0]
+        print(('Usage: %s CONFIG_FILE' % sys.argv[0]))
         sys.exit(1)
 
     with open(sys.argv[1], 'r') as config_file:
@@ -919,17 +975,30 @@ def get_relay_app(config=None):
     mobile_cfg = config.get('iris-mobile', {})
     if mobile_cfg.get('activated'):
         db.init(config['db'])
-        mobile_client = IrisClient(mobile_cfg['host'],
-                                   mobile_cfg['port'],
-                                   mobile_cfg.get('relay_app_name', 'iris-relay'),
-                                   mobile_cfg['api_key'],
-                                   version=None)
-        mobile_sink = MobileSink(mobile_client)
-        app.add_sink(mobile_sink, prefix='/api/v0/mobile/')
+        mobile_iris_client = IrisMobileClient(app=mobile_cfg.get('relay_app_name', 'iris-relay'),
+                                              api_host=mobile_cfg['host'],
+                                              key=mobile_cfg['api_key'])
+
+        mobile_oncall_client = OncallClient(
+            app=mobile_cfg.get('relay_app_name', 'iris-relay'),
+            key=mobile_cfg['oncall']['api_key'],
+            api_host=mobile_cfg['oncall']['host'])
+
+        iris_mobile_sink = IrisMobileSink(mobile_iris_client, mobile_cfg['host'])
+        oncall_mobile_sink = OncallMobileSink(mobile_oncall_client, mobile_cfg['oncall']['host'])
+        app.add_sink(oncall_mobile_sink, prefix='/api/v0/oncall/')
+        app.add_sink(iris_mobile_sink, prefix='/api/v0/mobile/')
         app.add_route('/saml/login/{idp_name}', SPInitiated(saml))
         app.add_route('/saml/sso/{idp_name}', IDPInitiated(mobile_cfg.get('auth'), saml))
         app.add_route('/api/v0/mobile/refresh', TokenRefresh(mobile_cfg.get('auth')))
         app.add_route('/api/v0/mobile/device', RegisterDevice(iclient))
+
+    for hook in config.get('post_init_hook', []):
+        try:
+            logger.debug('loading post init hook <%s>', hook)
+            getattr(import_module(hook), 'init')(app, config)
+        except Exception:
+            logger.exception('Failed loading post init hook <%s>', hook)
 
     return app
 
@@ -939,7 +1008,7 @@ def get_relay_server():
     config = read_config_from_argv()
     app = get_relay_app(config)
     server = config['server']
-    print 'LISTENING: %(host)s:%(port)d' % server
+    print(('LISTENING: %(host)s:%(port)d' % server))
     return WSGIServer((server['host'], server['port']), app)
 
 

@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 # Copyright (c) LinkedIn Corporation. All rights reserved. Licensed under the BSD-2 Clause license.
 # See LICENSE in the project root for license information.
 
@@ -58,7 +60,8 @@ def process_message(message):
         # TODO(khrichar): support other content types
         mime_type = part.get('mimeType')
         if mime_type == 'text/plain':
-            content = urlsafe_b64decode(str(part.get('body', {}).get('data', '')))
+            encoded_content = part.get('body', {}).get('data', '')
+            content = urlsafe_b64decode(encoded_content)
             yield headers, content
         elif mime_type == 'text/html':
             logger.debug('ignore html mime type for message: %s', message)
