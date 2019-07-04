@@ -23,7 +23,7 @@ EXPOSE 16648
 # uwsgi runs nginx. see uwsgi.yaml for details
 CMD ["/usr/bin/uwsgi", "--yaml", "/home/iris/daemons/uwsgi.yaml:prod"]
 ### user name recognition at runtime w/ an arbitrary uid - for OpenShift deployments
-RUN chgrp -R root /home/iris
-RUN chmod -R g=u /etc/passwd /home/iris
+RUN chgrp -R root /home/iris /var/log/nginx /var/lib/nginx
+RUN chmod -R g=u /etc/passwd /home/iris /var/log/nginx /var/lib/nginx
 ENTRYPOINT [ "uid_entrypoint.sh" ]
 USER 10001
