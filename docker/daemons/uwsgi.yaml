@@ -1,8 +1,8 @@
 prod:
-  plugins: python,logfile
+  plugins: python3,logfile
   chdir: /home/iris/src
   socket: /home/iris/var/run/uwsgi.sock
-  chmod-socket: 666
+  # chmod-socket: 666
   master: True
   # uid: 1000
   # gid: 1000
