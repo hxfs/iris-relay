@@ -27,5 +27,6 @@ CMD ["/usr/bin/uwsgi", "--yaml", "/home/iris/daemons/uwsgi.yaml:prod"]
 ### user name recognition at runtime w/ an arbitrary uid - for OpenShift deployments
 RUN chgrp -R root /home/iris /var/log/nginx /var/lib/nginx
 RUN chmod -R g=u /etc/passwd /home/iris /var/log/nginx /var/lib/nginx
+RUN chmod -R g+w /home/iris/config/config.yaml
 ENTRYPOINT [ "uid_entrypoint.sh" ]
 USER 10001
